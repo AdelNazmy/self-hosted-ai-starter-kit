@@ -1,31 +1,35 @@
 volumes:
   n8n_storage:
-  postgres_storage:
+  postgres_n8n_storage:
+  postgres_langflow_storage:
   ollama_storage:
   qdrant_storage:
+  langflow-data:
 
 networks:
-  demo:
+  LocalRAG:
+    name: LocalRAG
+    external: true
 
 x-n8n: &service-n8n
   image: n8nio/n8n:latest
-  networks: ['demo']
+  networks: ['LocalRAG']
   environment:
     - DB_TYPE=postgresdb
-    - DB_POSTGRESDB_HOST=postgres
-    - DB_POSTGRESDB_USER=${POSTGRES_USER}
-    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    - DB_POSTGRESDB_HOST=postgres_n8n
+    - DB_POSTGRESDB_USER=root
+    - DB_POSTGRESDB_PASSWORD=password
     - N8N_DIAGNOSTICS_ENABLED=false
     - N8N_PERSONALIZATION_ENABLED=false
-    - N8N_ENCRYPTION_KEY
-    - N8N_USER_MANAGEMENT_JWT_SECRET
+    - N8N_ENCRYPTION_KEY=super-secret-key
+    - N8N_USER_MANAGEMENT_JWT_SECRET=even-more-secret
   links:
-    - postgres
+    - postgres_n8n
 
 x-ollama: &service-ollama
   image: ollama/ollama:latest
   container_name: ollama
-  networks: ['demo']
+  networks: ['LocalRAG']
   restart: unless-stopped
   ports:
     - 11434:11434
@@ -34,7 +38,7 @@ x-ollama: &service-ollama
 
 x-init-ollama: &init-ollama
   image: ollama/ollama:latest
-  networks: ['demo']
+  networks: ['LocalRAG']
   container_name: ollama-pull-llama
   volumes:
     - ollama_storage:/root/.ollama
@@ -44,18 +48,36 @@ x-init-ollama: &init-ollama
     - "sleep 3; OLLAMA_HOST=ollama:11434 ollama pull llama3.1"
 
 services:
-  postgres:
+  postgres_n8n:
     image: postgres:16-alpine
-    networks: ['demo']
+    networks: ['LocalRAG']
+    container_name: postgres_n8n
     restart: unless-stopped
     environment:
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_DB
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=n8n
     volumes:
-      - postgres_storage:/var/lib/postgresql/data
+      - postgres_n8n_storage:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U root -d n8n']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  
+  postgres_langflow:
+    image: postgres:16-alpine
+    networks: ['LocalRAG']
+    container_name: postgres_langflow
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=langflow
+      - POSTGRES_PASSWORD=langflow
+      - POSTGRES_DB=langflow
+    volumes:
+      - postgres_langflow_storage:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U langflow -d langflow']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -70,7 +92,7 @@ services:
     volumes:
       - ./n8n/backup:/backup
     depends_on:
-      postgres:
+      postgres_n8n:
         condition: service_healthy
 
   n8n:
@@ -84,7 +106,7 @@ services:
       - ./n8n/backup:/backup
       - ./shared:/data/shared
     depends_on:
-      postgres:
+      postgres_n8n:
         condition: service_healthy
       n8n-import:
         condition: service_completed_successfully
@@ -92,12 +114,39 @@ services:
   qdrant:
     image: qdrant/qdrant
     container_name: qdrant
-    networks: ['demo']
+    networks: ['LocalRAG']
     restart: unless-stopped
     ports:
       - 6333:6333
     volumes:
       - qdrant_storage:/qdrant/storage
+  
+  redis-stack:
+    image: redis/redis-stack
+    container_name: redis-stack
+    networks: ['LocalRAG']
+    restart: unless-stopped
+    ports:
+      - 6379:6379 
+      - 8001:8001
+    environment:
+      - REDIS_ARGS="--requirepass mypassword" 
+  
+  langflow:
+    image: langflowai/langflow:latest # or another version tag on https://hub.docker.com/r/langflowai/langflow 
+    pull_policy: always               # set to 'always' when using 'latest' image
+    ports:
+      - "7860:7860"
+    depends_on:
+      - postgres_langflow
+    environment:
+      - LANGFLOW_DATABASE_URL=postgresql://langflow:langflow@postgres_langflow:5432/langflow
+      # This variable defines where the logs, file storage, monitor data and secret keys are stored.
+    volumes:
+      - langflow-data:/app/langflow
+    networks: ['LocalRAG']
+    container_name: langflow
+  
 
   ollama-cpu:
     profiles: ["cpu"]
