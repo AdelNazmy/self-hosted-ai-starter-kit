@@ -92,8 +92,6 @@ sudo apt-get update
 sudo apt-get install -y nvidia-container-toolkit
 ```
 
-#### Nvidia users
-
 ```
 git clone https://github.com/n8n-io/self-hosted-ai-starter-kit.git
 cd self-hosted-ai-starter-kit
