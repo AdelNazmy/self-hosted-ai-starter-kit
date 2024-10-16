@@ -2,9 +2,11 @@ volumes:
   n8n_storage:
   postgres_n8n_storage:
   postgres_langflow_storage:
+  postgres_langfuse_storage:
   ollama_storage:
   qdrant_storage:
-  langflow-data:
+  langflow-storage:
+  flowise-storage:
 
 networks:
   LocalRAG:
@@ -45,7 +47,7 @@ x-init-ollama: &init-ollama
   entrypoint: /bin/sh
   command:
     - "-c"
-    - "sleep 3; OLLAMA_HOST=ollama:11434 ollama pull llama3.1"
+    - "sleep 3;export OLLAMA_HOST=ollama:11434;ollama pull llama3.2:3b-instruct-q8_0;ollama pull qwen2.5:7b-instruct-q8_0"
 
 services:
   postgres_n8n:
@@ -118,6 +120,7 @@ services:
     restart: unless-stopped
     ports:
       - 6333:6333
+      - 6334:6334 
     volumes:
       - qdrant_storage:/qdrant/storage
   
@@ -129,8 +132,6 @@ services:
     ports:
       - 6379:6379 
       - 8001:8001
-    environment:
-      - REDIS_ARGS="--requirepass mypassword" 
   
   langflow:
     image: langflowai/langflow:latest # or another version tag on https://hub.docker.com/r/langflowai/langflow 
@@ -141,12 +142,91 @@ services:
       - postgres_langflow
     environment:
       - LANGFLOW_DATABASE_URL=postgresql://langflow:langflow@postgres_langflow:5432/langflow
+      - LANGFLOW_LANGFUSE_SECRET_KEY=sk-lf-dcc609b8-1720-4f6d-bf7d-bdc5e3dc2605
+      - LANGFLOW_LANGFUSE_PUBLIC_KEY=pk-lf-df330244-dba5-4201-affb-1deef764599e
+      - LANGFLOW_LANGFUSE_HOST=http://langfuse-server:3000
       # This variable defines where the logs, file storage, monitor data and secret keys are stored.
     volumes:
-      - langflow-data:/app/langflow
+      - langflow-storage:/app/langflow
     networks: ['LocalRAG']
     container_name: langflow
+    command: langflow run --host 0.0.0.0
   
+  langfuse-server:
+    image: langfuse/langfuse:2
+    container_name: langfuse-server
+    networks: ['LocalRAG']
+    restart: unless-stopped
+    ports:
+      - 4000:3000
+    depends_on:
+      postgres_langfuse:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@postgres_langfuse:5432/langfuse
+      - SALT=mysalt
+      - ENCRYPTION_KEY=e31a0f616083115c22c6d181ef82684d933f3eddda52e5429697dc608170d6b9 # generate via `openssl rand -hex 32`
+      - NEXTAUTH_URL=http://localhost:4000
+      - NEXTAUTH_SECRET=cacola
+      - TELEMETRY_ENABLED=false
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
+      - SALT="salt"
+      - REDIS_HOST=redis-stack
+      - REDIS_PORT=6379
+
+  postgres_langfuse:
+    image: postgres
+    container_name: postgres_langfuse
+    networks: ['LocalRAG']
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U langfuse -d langfuse"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    volumes:
+      - postgres_langfuse_storage:/var/lib/postgresql/data
+
+  flowise:
+      image: flowiseai/flowise
+      container_name: flowise
+      networks: ['LocalRAG']
+      restart: unless-stopped
+      environment:
+          - PORT=${Flowise_Port}
+          - CORS_ORIGINS=${CORS_ORIGINS}
+          - IFRAME_ORIGINS=${IFRAME_ORIGINS}
+          - FLOWISE_USERNAME=${FLOWISE_USERNAME}
+          - FLOWISE_PASSWORD=${FLOWISE_PASSWORD}
+          - FLOWISE_FILE_SIZE_LIMIT=${FLOWISE_FILE_SIZE_LIMIT}
+          - DEBUG=${DEBUG}
+          - DATABASE_PATH=${Flowise_DATABASE_PATH}
+          - DATABASE_TYPE=${DATABASE_TYPE}
+          - DATABASE_PORT=${DATABASE_PORT}
+          - DATABASE_HOST=${DATABASE_HOST}
+          - DATABASE_NAME=${DATABASE_NAME}
+          - DATABASE_USER=${DATABASE_USER}
+          - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+          - DATABASE_SSL=${DATABASE_SSL}
+          - DATABASE_SSL_KEY_BASE64=${DATABASE_SSL_KEY_BASE64}
+          - APIKEY_PATH=${Flowise_APIKEY_PATH}
+          - SECRETKEY_PATH=${Flowise_SECRETKEY_PATH}
+          - FLOWISE_SECRETKEY_OVERWRITE=${FLOWISE_SECRETKEY_OVERWRITE}
+          - LOG_LEVEL=${LOG_LEVEL}
+          - LOG_PATH=${Flowise_LOG_PATH}
+          - BLOB_STORAGE_PATH=${Flowise_BLOB_STORAGE_PATH}
+          - DISABLE_FLOWISE_TELEMETRY=${DISABLE_FLOWISE_TELEMETRY}
+          - MODEL_LIST_CONFIG_JSON=${MODEL_LIST_CONFIG_JSON}
+      ports:
+          - '${Flowise_Port}:${Flowise_Port}'
+      volumes:
+          - flowise-storage:/root/.flowise
+      entrypoint: /bin/sh -c "sleep 3; flowise start"
+
 
   ollama-cpu:
     profiles: ["cpu"]
